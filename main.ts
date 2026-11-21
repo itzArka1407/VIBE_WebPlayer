@@ -104,3 +104,27 @@ $<HTMLInputElement>('soundChk').onchange = e => {
 playStitched();
 
 (window as any).dbg = { A, B, C };
+
+const el = document.getElementById('mainStageWrapper');
+const fsToggleBtn = el!.getElementsByClassName('fstogglebtn')[0];
+const stageEl = document.getElementById('bigStage')!;
+
+fsToggleBtn.addEventListener('click', function() {
+    document.fullscreenElement ? document.exitFullscreen() : (() => {
+        stageEl.requestFullscreen();
+        stageEl.focus({ preventScroll: true })
+    })();
+});
+
+stageEl.addEventListener('keydown', ev => {
+    const show = stitched;                    // read it fresh: playStitched() swaps the instance
+    if (!show) return;
+    switch (ev.key) {
+        case 'ArrowRight': show.next(); break;
+        case 'ArrowLeft': show.prev(); break;
+        case ' ': show.toggle(); break;
+        case 'r': case 'R': void show.restart(); break;
+        default: return;                      // leave every other key alone
+    }
+    ev.preventDefault();
+});

@@ -334,6 +334,46 @@ export class FrameSlideshow {
         return this.start();
     }
 
+    /** Pause if playing, resume if paused (a finished show replays from the start). */
+    toggle(): void {
+        if (this.running) this.stop();
+        else void this.start();
+    }
+
+    /**
+     * Jump to a frame (clamped). While playing, the frame's intro fade plays; while paused the frame is
+     * shown fully visible. Tracks that cover the new position are re-queued and seeked into place.
+     */
+    goTo(index: number): void {
+        const n = this.frames.length;
+        const i = Math.max(0, Math.min(n - 1, Math.floor(index)));
+        this.killAll();
+        this.index = i;
+        this.t = 0;
+        this.passMs = 0;
+        this.ended = false;
+        this.entered = true;
+        for (let j = 0; j <= i; j++) {
+            this.queueTracks(j, this.passMs, i);
+            if (j < i) this.passMs += this.resolve(j).duration;
+        }
+        this.render();
+        if (!this.running) {
+            this.setColor(this.resolve(i).color);
+            this.overlay.style.opacity = '0';
+        }
+    }
+
+    next(): void {
+        if (this.index < this.frames.length - 1) this.goTo(this.index + 1);
+        else if (this.opts.loop) this.goTo(0);
+    }
+
+    /** Like a media player: restarts the current frame, or goes back one if it has just begun. */
+    prev(): void {
+        this.goTo(this.t > 1000 || this.index === 0 ? this.index : this.index - 1);
+    }
+
     destroy(): void {
         this.stop();
         this.killAll();
@@ -478,17 +518,27 @@ export class FrameSlideshow {
             if (e.cut && (wrapped || this.index >= e.endFrame)) { this.kill(e); return false; }
             return true;
         });
+        this.queueTracks(this.index, this.passMs, this.index);
+    }
+
+    /**
+     * Queue the tracks owned by frame j, which started at startMs. When j is before `upto` (a seek),
+     * only tracks that still cover frame `upto` are queued; the rest are already over.
+     */
+    private queueTracks(j: number, startMs: number, upto: number): void {
         const n = this.frames.length;
-        for (const spec of this.frames[this.index].audio) {
+        for (const spec of this.frames[j].audio) {
             const span = Math.max(1, spec.span ?? 1);
+            const cut = spec.stopAtEnd !== false;
+            if (j < upto && !(cut && j + span > upto)) continue;
             let lenMs = 0;
-            for (let k = this.index; k < Math.min(this.index + span, n); k++) lenMs += this.resolve(k).duration;
+            for (let k = j; k < Math.min(j + span, n); k++) lenMs += this.resolve(k).duration;
             this.audio.push({
                 spec,
-                endFrame: this.index + span,
-                cut: spec.stopAtEnd !== false,
+                endFrame: j + span,
+                cut,
                 offsetMs: Math.max(0, spec.offset ?? 0),
-                startMs: this.passMs,
+                startMs,
                 lenMs,
                 el: null,
                 started: false,
@@ -508,11 +558,10 @@ export class FrameSlideshow {
         }
         el.preload = 'auto';
         el.loop = !!e.spec.loop;
-        if (e.spec.startAt) {
-            try { el.currentTime = e.spec.startAt / 1000; } catch { /* metadata not ready yet */ }
-        }
-        el.addEventListener('ended', () => { this.audio = this.audio.filter(x => x !== e); });
         e.el = el;
+        const late = this.passMs + this.t - e.startMs - e.offsetMs;   // > 0 when started after a seek
+        if (e.spec.startAt || late > 300) this.seekToNow(e);
+        el.addEventListener('ended', () => { this.audio = this.audio.filter(x => x !== e); });
         this.applyVolume(e);
         this.play(e);
     }

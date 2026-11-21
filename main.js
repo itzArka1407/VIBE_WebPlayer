@@ -18,17 +18,17 @@
           node.removeChild(child);
           continue;
         }
-        const el = child;
-        if (DROP_TAGS.has(el.tagName)) {
-          el.remove();
+        const el2 = child;
+        if (DROP_TAGS.has(el2.tagName)) {
+          el2.remove();
           continue;
         }
-        if (!SAFE_TAGS.has(el.tagName)) {
-          el.replaceWith(document.createTextNode(el.textContent ?? ""));
+        if (!SAFE_TAGS.has(el2.tagName)) {
+          el2.replaceWith(document.createTextNode(el2.textContent ?? ""));
           continue;
         }
-        for (const attr of Array.from(el.attributes)) if (attr.name !== "class") el.removeAttribute(attr.name);
-        walk(el);
+        for (const attr of Array.from(el2.attributes)) if (attr.name !== "class") el2.removeAttribute(attr.name);
+        walk(el2);
       }
     };
     walk(tpl.content);
@@ -258,6 +258,42 @@
       this.reset();
       return this.start();
     }
+    /** Pause if playing, resume if paused (a finished show replays from the start). */
+    toggle() {
+      if (this.running) this.stop();
+      else void this.start();
+    }
+    /**
+     * Jump to a frame (clamped). While playing, the frame's intro fade plays; while paused the frame is
+     * shown fully visible. Tracks that cover the new position are re-queued and seeked into place.
+     */
+    goTo(index) {
+      const n = this.frames.length;
+      const i = Math.max(0, Math.min(n - 1, Math.floor(index)));
+      this.killAll();
+      this.index = i;
+      this.t = 0;
+      this.passMs = 0;
+      this.ended = false;
+      this.entered = true;
+      for (let j = 0; j <= i; j++) {
+        this.queueTracks(j, this.passMs, i);
+        if (j < i) this.passMs += this.resolve(j).duration;
+      }
+      this.render();
+      if (!this.running) {
+        this.setColor(this.resolve(i).color);
+        this.overlay.style.opacity = "0";
+      }
+    }
+    next() {
+      if (this.index < this.frames.length - 1) this.goTo(this.index + 1);
+      else if (this.opts.loop) this.goTo(0);
+    }
+    /** Like a media player: restarts the current frame, or goes back one if it has just begun. */
+    prev() {
+      this.goTo(this.t > 1e3 || this.index === 0 ? this.index : this.index - 1);
+    }
     destroy() {
       this.stop();
       this.killAll();
@@ -334,9 +370,9 @@
       if (this.warmed.has(src)) return;
       this.warmed.add(src);
       try {
-        const el = this.makeAudio(src);
-        el.preload = "auto";
-        this.warm.push(el);
+        const el2 = this.makeAudio(src);
+        el2.preload = "auto";
+        this.warm.push(el2);
       } catch {
       }
     }
@@ -349,17 +385,26 @@
         }
         return true;
       });
+      this.queueTracks(this.index, this.passMs, this.index);
+    }
+    /**
+     * Queue the tracks owned by frame j, which started at startMs. When j is before `upto` (a seek),
+     * only tracks that still cover frame `upto` are queued; the rest are already over.
+     */
+    queueTracks(j, startMs, upto) {
       const n = this.frames.length;
-      for (const spec of this.frames[this.index].audio) {
+      for (const spec of this.frames[j].audio) {
         const span = Math.max(1, spec.span ?? 1);
+        const cut = spec.stopAtEnd !== false;
+        if (j < upto && !(cut && j + span > upto)) continue;
         let lenMs = 0;
-        for (let k = this.index; k < Math.min(this.index + span, n); k++) lenMs += this.resolve(k).duration;
+        for (let k = j; k < Math.min(j + span, n); k++) lenMs += this.resolve(k).duration;
         this.audio.push({
           spec,
-          endFrame: this.index + span,
-          cut: spec.stopAtEnd !== false,
+          endFrame: j + span,
+          cut,
           offsetMs: Math.max(0, spec.offset ?? 0),
-          startMs: this.passMs,
+          startMs,
           lenMs,
           el: null,
           started: false,
@@ -369,25 +414,21 @@
     }
     startEntry(e) {
       e.started = true;
-      let el;
+      let el2;
       try {
-        el = this.makeAudio(this.url(e.spec.src));
+        el2 = this.makeAudio(this.url(e.spec.src));
       } catch (err) {
         this.onAudioError?.(err, e.spec);
         return;
       }
-      el.preload = "auto";
-      el.loop = !!e.spec.loop;
-      if (e.spec.startAt) {
-        try {
-          el.currentTime = e.spec.startAt / 1e3;
-        } catch {
-        }
-      }
-      el.addEventListener("ended", () => {
+      el2.preload = "auto";
+      el2.loop = !!e.spec.loop;
+      e.el = el2;
+      const late = this.passMs + this.t - e.startMs - e.offsetMs;
+      if (e.spec.startAt || late > 300) this.seekToNow(e);
+      el2.addEventListener("ended", () => {
         this.audio = this.audio.filter((x) => x !== e);
       });
-      e.el = el;
       this.applyVolume(e);
       this.play(e);
     }
@@ -404,8 +445,8 @@
       e.el.muted = v === 0;
     }
     play(e) {
-      const el = e.el;
-      if (!el) return;
+      const el2 = e.el;
+      if (!el2) return;
       const fail = (err) => {
         if (err?.name === "NotAllowedError") {
           e.blocked = true;
@@ -414,20 +455,20 @@
         this.onAudioError?.(err, e.spec);
       };
       try {
-        void Promise.resolve(el.play()).catch(fail);
+        void Promise.resolve(el2.play()).catch(fail);
       } catch (err) {
         fail(err);
       }
     }
     /** Move a track to where it would be if it had started on time. */
     seekToNow(e) {
-      const el = e.el;
-      if (!el) return;
+      const el2 = e.el;
+      if (!el2) return;
       const played = Math.max(0, this.passMs + this.t - e.startMs - e.offsetMs);
       let target = ((e.spec.startAt ?? 0) + played) / 1e3;
-      if (e.spec.loop && Number.isFinite(el.duration) && el.duration > 0) target %= el.duration;
+      if (e.spec.loop && Number.isFinite(el2.duration) && el2.duration > 0) target %= el2.duration;
       try {
-        el.currentTime = target;
+        el2.currentTime = target;
       } catch {
       }
     }
@@ -580,4 +621,35 @@
   };
   playStitched();
   window.dbg = { A, B, C };
+  var el = document.getElementById("mainStageWrapper");
+  var fsToggleBtn = el.getElementsByClassName("fstogglebtn")[0];
+  var stageEl = document.getElementById("bigStage");
+  fsToggleBtn.addEventListener("click", function() {
+    document.fullscreenElement ? document.exitFullscreen() : (() => {
+      stageEl.requestFullscreen();
+      stageEl.focus({ preventScroll: true });
+    })();
+  });
+  stageEl.addEventListener("keydown", (ev) => {
+    const show = stitched;
+    if (!show) return;
+    switch (ev.key) {
+      case "ArrowRight":
+        show.next();
+        break;
+      case "ArrowLeft":
+        show.prev();
+        break;
+      case " ":
+        show.toggle();
+        break;
+      case "r":
+      case "R":
+        void show.restart();
+        break;
+      default:
+        return;
+    }
+    ev.preventDefault();
+  });
 })();
