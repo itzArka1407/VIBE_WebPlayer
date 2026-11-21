@@ -56,7 +56,7 @@ const A = mountClip('A', root => new FrameSlideshow(root, {
     images: [svg('#0f2027', '#2c5364', '#7dd3fc'), svg('#134e5e', '#71b280', '#fde68a'), svg('#232526', '#414345', '#fca5a5')],
     texts: ['A · one<br>two<br>three lines here', 'Short<br>and a much longer line', 'Last<br>one'],
     textAlign: 'justify-all',
-    audio: { src: /*tone(220, 7500)*/ 'music/melancholy.mp3', volume: 0.6, fadeIn: 500, fadeOut: 800 },   // global: plays across the clip
+    // audio: { src: /*tone(220, 7500)*/ 'music/melancholy.mp3', volume: 0.6, fadeIn: 500, fadeOut: 800 },   // global: plays across the clip
     duration: 2500, fade: 500, color: '#000000', loop: false,
     volume, onAudioError,
 }));
@@ -74,11 +74,12 @@ const C = mountClip('C', root => new FrameSlideshow(root, {
     frames: [
         {
             image: svg('#355c7d', '#6c5b7b', '#c06c84'), text: 'C · seven', duration: 2000, color: '#ffffff',
-            audio: { src: tone(523, 1800), offset: 200 }
+            // audio: { src: tone(523, 1800), offset: 200 }
         },
         {
             image: svg('#11998e', '#38ef7d', '#ffffff'), text: 'C · eight<br>(with a fade-out)', duration: 3500, fade: 900, color: '#ffffff',
-            textAlign: 'justify-all', audio: { src: tone(659, 3000), fadeIn: 300, fadeOut: 600 }
+            textAlign: 'justify-all',
+            // audio: { src: tone(659, 3000), fadeIn: 300, fadeOut: 600 }
         },
     ],
     loop: false,

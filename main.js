@@ -515,33 +515,6 @@
   var svg = (a, b, c) => "data:image/svg+xml," + encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient><radialGradient id="r" cx=".7" cy=".3" r=".5"><stop offset="0" stop-color="${c}" stop-opacity=".8"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></radialGradient></defs><rect width="1600" height="1000" fill="url(#g)"/><rect width="1600" height="1000" fill="url(#r)"/></svg>`
   );
-  function tone(freq, ms) {
-    const rate = 8e3;
-    const n = Math.floor(rate * ms / 1e3);
-    const buf = new ArrayBuffer(44 + n);
-    const v = new DataView(buf);
-    const w = (o, s) => {
-      for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
-    };
-    w(0, "RIFF");
-    v.setUint32(4, 36 + n, true);
-    w(8, "WAVE");
-    w(12, "fmt ");
-    v.setUint32(16, 16, true);
-    v.setUint16(20, 1, true);
-    v.setUint16(22, 1, true);
-    v.setUint32(24, rate, true);
-    v.setUint32(28, rate, true);
-    v.setUint16(32, 1, true);
-    v.setUint16(34, 8, true);
-    w(36, "data");
-    v.setUint32(40, n, true);
-    for (let i = 0; i < n; i++) {
-      const env = Math.min(1, i / 400, (n - i) / 400);
-      v.setUint8(44 + i, 128 + Math.round(Math.sin(2 * Math.PI * freq * i / rate) * 60 * env));
-    }
-    return new Blob([buf], { type: "audio/wav" });
-  }
   var volume = 1;
   var onAudioError = (err, spec) => console.error("audio failed", spec.src, err);
   function mountClip(title, make) {
@@ -565,11 +538,7 @@
     images: [svg("#0f2027", "#2c5364", "#7dd3fc"), svg("#134e5e", "#71b280", "#fde68a"), svg("#232526", "#414345", "#fca5a5")],
     texts: ["A \xB7 one<br>two<br>three lines here", "Short<br>and a much longer line", "Last<br>one"],
     textAlign: "justify-all",
-    audio: { src: (
-      /*tone(220, 7500)*/
-      "music/melancholy.mp3"
-    ), volume: 0.6, fadeIn: 500, fadeOut: 800 },
-    // global: plays across the clip
+    // audio: { src: /*tone(220, 7500)*/ 'music/melancholy.mp3', volume: 0.6, fadeIn: 500, fadeOut: 800 },   // global: plays across the clip
     duration: 2500,
     fade: 500,
     color: "#000000",
@@ -593,8 +562,8 @@
         image: svg("#355c7d", "#6c5b7b", "#c06c84"),
         text: "C \xB7 seven",
         duration: 2e3,
-        color: "#ffffff",
-        audio: { src: tone(523, 1800), offset: 200 }
+        color: "#ffffff"
+        // audio: { src: tone(523, 1800), offset: 200 }
       },
       {
         image: svg("#11998e", "#38ef7d", "#ffffff"),
@@ -602,8 +571,8 @@
         duration: 3500,
         fade: 900,
         color: "#ffffff",
-        textAlign: "justify-all",
-        audio: { src: tone(659, 3e3), fadeIn: 300, fadeOut: 600 }
+        textAlign: "justify-all"
+        // audio: { src: tone(659, 3000), fadeIn: 300, fadeOut: 600 }
       }
     ],
     loop: false,
