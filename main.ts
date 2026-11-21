@@ -28,7 +28,7 @@ function tone(freq: number, ms: number): Blob {
 }
 
 let volume = 0;   // master volume, driven by the "sound" checkbox
-const onAudioError = (err: unknown, spec: AudioSpec): void => console.debug('audio blocked/failed', spec.src, err);
+const onAudioError = (err: unknown, spec: AudioSpec): void => console.error('audio failed', spec.src, err);
 
 // One display per clip: its own stage, replay button and status.
 function mountClip(title: string, make: (root: HTMLElement) => FrameSlideshow): FrameSlideshow {

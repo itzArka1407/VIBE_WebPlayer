@@ -445,7 +445,7 @@
     return new Blob([buf], { type: "audio/wav" });
   }
   var volume = 0;
-  var onAudioError = (err, spec) => console.debug("audio blocked/failed", spec.src, err);
+  var onAudioError = (err, spec) => console.error("audio failed", spec.src, err);
   function mountClip(title, make) {
     const fig = document.createElement("figure");
     fig.className = "cell";
@@ -468,7 +468,10 @@
     images: [svg("#0f2027", "#2c5364", "#7dd3fc"), svg("#134e5e", "#71b280", "#fde68a"), svg("#232526", "#414345", "#fca5a5")],
     texts: ["A \xB7 one<br>two<br>three lines here", "Short<br>and a much longer line", "Last<br>one"],
     textAlign: "justify-all",
-    audio: { src: tone(220, 7500), volume: 0.6, fadeIn: 500, fadeOut: 800 },
+    audio: { src: (
+      /*tone(220, 7500)*/
+      "music/melancholy.mp3"
+    ), volume: 0.6, fadeIn: 500, fadeOut: 800 },
     // global: plays across the clip
     duration: 2500,
     fade: 500,
