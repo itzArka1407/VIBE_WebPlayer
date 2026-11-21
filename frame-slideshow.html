@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>FrameSlideshow</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            background: #0b0b0c;
+            color: #eee;
+            font-family: system-ui, sans-serif;
+        }
+
+        /* --- component styles (needed by FrameSlideshow) --- */
+        .fs {
+            position: relative;
+            overflow: hidden;
+            background: #000;
+            container-type: size;
+        }
+
+        .fs-bg,
+        .fs-overlay,
+        .fs-text-wrap {
+            position: absolute;
+            inset: 0;
+        }
+
+        .fs-bg {
+            background-size: cover;
+            background-position: center;
+        }
+
+        .fs-text-wrap {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 6vmin;
+            padding: 6cqmin;
+            text-align: center;
+        }
+
+        .fs-text {
+            color: #fff;
+            font-weight: 700;
+            font-size: clamp(1.5rem, 6vmin, 4rem);
+            font-size: clamp(.8rem, 7cqmin, 4rem);
+            line-height: 1.2;
+            text-shadow: 0 2px 18px rgba(0, 0, 0, .55);
+            max-width: 22ch;
+        }
+
+        .fs-overlay {
+            background: var(--fs-color, #000);
+            opacity: 1;
+            pointer-events: none;
+        }
+
+        /* --- demo page layout --- */
+        main {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+        }
+
+        h2 {
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            color: #999;
+            margin: 24px 0 10px;
+        }
+
+        #clips {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 14px;
+        }
+
+        .cell {
+            margin: 0;
+        }
+
+        .stage {
+            aspect-ratio: 16 / 9;
+            border-radius: 10px;
+        }
+
+        figcaption {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 13px;
+            padding-top: 8px;
+        }
+
+        .status {
+            color: #8a8;
+            margin-left: 6px;
+        }
+
+        button {
+            font: inherit;
+            font-size: 13px;
+            padding: 5px 12px;
+            border-radius: 8px;
+            border: 1px solid #444;
+            background: #1c1c1e;
+            color: #eee;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #2a2a2d;
+        }
+
+        .bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            align-items: center;
+            margin-bottom: 10px;
+            font-size: 13px;
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <h2>Independent clips (each plays once, on its own)</h2>
+        <div id="clips"></div>
+
+        <h2>Stitched result</h2>
+        <div class="bar">
+            <button id="stitchBtn">Stitch A + B + C &amp; play</button>
+            <label><input type="checkbox" id="loopChk"> loop stitched result</label>
+            <span id="stitchInfo"></span>
+        </div>
+        <div class="stage fs" id="bigStage"></div>
+    </main>
+
+    <script>
+        /**
+         * FrameSlideshow — a list of frames (image + text) rendered with a fade-through-color transition.
+         *
+         *   const s = new FrameSlideshow(el, { images, texts, duration, fade, color, loop, onEnd, onFrame });
+         *   s.start()            // -> Promise: 'ended' (loop:false finished) or 'stopped'
+         *   s.stop() / s.restart() / s.destroy()
+         *   s.push(frame)        // attach one more frame { image, text, duration?, fade?, color? }
+         *   s.stitch(other, { root, loop })              // -> NEW FrameSlideshow = this frames + other frames
+         *   FrameSlideshow.stitchAll([a, b, c], {root})  // same, for many at once
+         *
+         * Per frame (all optional, fall back to the slideshow defaults):
+         *   duration = total ms the frame occupies (including its fade-in and fade-out halves)
+         *   fade     = ms of each half of the transition
+         *   color    = color this frame fades OUT through; the next frame fades IN from the same color
+         *
+         * loop:false -> plays once, ends covered by the last frame's color, fires onEnd, resolves start().
+         * stitch() never touches the originals: they keep their own display and can keep playing.
+         */
+        class FrameSlideshow {
+            constructor(root, {frames, images, texts, duration = 5000, fade = 800, color = '#000', loop = true, onEnd, onFrame} = {}) {
+                let list;
+                if (Array.isArray(frames)) {
+                    list = frames.map(f => ({...f}));
+                } else {
+                    if (!Array.isArray(images) || !Array.isArray(texts))
+                        throw new Error('pass either frames, or images + texts arrays');
+                    if (images.length !== texts.length)
+                        throw new Error('images and texts must be the same length');
+                    list = images.map((image, i) => ({image, text: texts[i]}));
+                }
+                if (!list.length) throw new Error('need at least one frame');
+                list.forEach(FrameSlideshow._check);
+
+                this.frames = list;
+                this.opts = {duration, fade, color, loop};
+                this.onEnd = onEnd;
+                this.onFrame = onFrame;
+
+                this.index = 0;
+                this.t = 0;                // ms elapsed within the current frame
+                this.running = false;
+                this.ended = false;
+                this.raf = 0;
+                this.last = 0;
+                this._tok = 0;             // invalidates stale preloads after stop()/restart()
+                this._c = null;
+                this._resolveDone = null;
+                this.done = Promise.resolve('stopped');
+
+                this.root = root || document.createElement('div');
+                this.root.classList.add('fs');
+                this.root.innerHTML = '<div class="fs-bg"></div><div class="fs-text-wrap"><div class="fs-text"></div></div><div class="fs-overlay"></div>';
+                this.bg = this.root.querySelector('.fs-bg');
+                this.textEl = this.root.querySelector('.fs-text');
+                this.overlay = this.root.querySelector('.fs-overlay');
+                this._setColor(this._f(0).color);
+
+                this._tick = this._tick.bind(this);
+                this._onVis = () => {this.last = performance.now();};
+                document.addEventListener('visibilitychange', this._onVis);
+            }
+
+            static _check(f) {
+                if (typeof f.image !== 'string' || !f.image) throw new Error('every frame needs an image string');
+                f.text = String(f.text ?? '');
+            }
+
+            /* ---------- data side ---------- */
+
+            // Resolve a frame against the slideshow defaults.
+            _f(i) {
+                const f = this.frames[i], o = this.opts;
+                const duration = Math.max(f.duration ?? o.duration, 100);
+                return {
+                    image: f.image,
+                    text: f.text,
+                    duration,
+                    fade: Math.min(f.fade ?? o.fade, duration / 2),
+                    color: f.color ?? o.color,
+                };
+            }
+
+            _baked() {return this.frames.map((_, i) => this._f(i));}   // every field filled in
+
+            get totalMs() {return this.frames.reduce((s, _, i) => s + this._f(i).duration, 0);}
+
+            push(frame) {
+                const f = {...frame};
+                FrameSlideshow._check(f);
+                this.frames.push(f);
+                return this;
+            }
+
+            setOptions(o) {
+                Object.assign(this.opts, o);
+                if (this.t >= this._f(this.index).duration) this.t = 0;
+            }
+
+            static stitchAll(parts, {root, ...opts} = {}) {
+                if (!parts.length) throw new Error('nothing to stitch');
+                const frames = parts.flatMap(p => p._baked());
+                return new FrameSlideshow(root, {loop: parts[0].opts.loop, ...opts, frames});
+            }
+
+            stitch(other, opts) {return FrameSlideshow.stitchAll([this, other], opts);}
+
+            /* ---------- playback side ---------- */
+
+            _preload() {
+                const srcs = [...new Set(this.frames.map(f => f.image))];
+                return Promise.all(srcs.map(src => new Promise(res => {
+                    const img = new Image();
+                    img.onload = img.onerror = () => res();   // a broken image must not block playback
+                    img.src = src;
+                })));
+            }
+
+            _setColor(c) {
+                if (c === this._c) return;
+                this._c = c;
+                this.root.style.setProperty('--fs-color', c);
+            }
+
+            _render() {
+                const f = this.frames[this.index];
+                this.bg.style.backgroundImage = `url(${JSON.stringify(f.image)})`;
+                this.textEl.textContent = f.text;    // textContent: no HTML injection
+                this.onFrame?.(this.index, this);
+            }
+
+            _reset() {
+                this.index = 0;
+                this.t = 0;
+                this.ended = false;
+                this.overlay.style.opacity = 1;
+            }
+
+            _settle(reason) {
+                const r = this._resolveDone;
+                this._resolveDone = null;
+                r?.(reason);
+            }
+
+            start() {
+                if (this.running) return this.done;
+                if (this.ended) this._reset();
+                this.running = true;
+                this.done = new Promise(r => (this._resolveDone = r));
+                const tok = ++this._tok;
+                this._preload().then(() => {
+                    if (tok !== this._tok || !this.running) return;   // stopped or restarted meanwhile
+                    this._render();
+                    this.last = performance.now();
+                    this.raf = requestAnimationFrame(this._tick);
+                });
+                return this.done;
+            }
+
+            stop() {
+                this.running = false;
+                this._tok++;
+                cancelAnimationFrame(this.raf);
+                this._settle('stopped');
+            }
+
+            restart() {
+                this.stop();
+                this._reset();
+                return this.start();
+            }
+
+            destroy() {
+                this.stop();
+                document.removeEventListener('visibilitychange', this._onVis);
+                this.root.innerHTML = '';
+            }
+
+            _end(cur) {
+                this.running = false;
+                this.ended = true;
+                this._setColor(cur.color);
+                this.overlay.style.opacity = 1;          // finish fully covered by the last color
+                this.onEnd?.(this);
+                this._settle('ended');
+            }
+
+            _tick(now) {
+                if (!this.running) return;
+                // Clamp dt: after a hidden tab or a long frame we resume instead of skipping frames.
+                const dt = Math.min(now - this.last, 100);
+                this.last = now;
+                this.t += dt;
+
+                const n = this.frames.length;
+                let cur = this._f(this.index);
+                while (this.t >= cur.duration) {            // advance only while the overlay is fully opaque
+                    this.t -= cur.duration;
+                    if (this.index === n - 1 && !this.opts.loop) return this._end(cur);
+                    this.index = (this.index + 1) % n;
+                    this._render();
+                    cur = this._f(this.index);
+                }
+
+                const D = cur.duration, F = cur.fade;
+                const ease = x => x * x * (3 - 2 * x);
+                let o = 0, color = cur.color;
+                if (this.t < F) {                           // previous color -> this frame
+                    const prev = this.index > 0 ? this.index - 1 : (this.opts.loop ? n - 1 : 0);
+                    color = this._f(prev).color;
+                    o = 1 - ease(this.t / F);
+                } else if (this.t > D - F) {                // this frame -> its own color
+                    o = ease((this.t - (D - F)) / F);
+                }
+                this._setColor(color);
+                this.overlay.style.opacity = o.toFixed(3);
+
+                this.raf = requestAnimationFrame(this._tick);
+            }
+        }
+
+        /* ---------- demo helpers (inline SVG gradients so nothing is fetched) ---------- */
+        const svg = (a, b, c) => 'data:image/svg+xml,' + encodeURIComponent(
+            `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000"><defs>` +
+            `<linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient>` +
+            `<radialGradient id="r" cx=".7" cy=".3" r=".5"><stop offset="0" stop-color="${c}" stop-opacity=".8"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></radialGradient></defs>` +
+            `<rect width="1600" height="1000" fill="url(#g)"/><rect width="1600" height="1000" fill="url(#r)"/></svg>`);
+
+        const $ = id => document.getElementById(id);
+
+        // One display per clip: its own stage, replay button and status.
+        function mountClip(title, make) {
+            const fig = document.createElement('figure');
+            fig.className = 'cell';
+            fig.innerHTML = '<div class="stage"></div><figcaption><span><b></b><span class="status"></span></span><button>&#9654; Replay</button></figcaption>';
+            $('clips').append(fig);
+            fig.querySelector('b').textContent = title;
+            const status = fig.querySelector('.status');
+
+            const show = make(fig.querySelector('.stage'));
+            const play = () => {
+                status.textContent = 'playing…';
+                show.restart().then(r => {if (r === 'ended') status.textContent = '✓ finished';});
+            };
+            fig.querySelector('button').onclick = play;
+            play();
+            return show;
+        }
+
+        // ===================== MAIN SECTION =============================
+        // Alter code to directly change the animations and all
+
+        // Clip A: images + texts arrays, play once
+        const A = mountClip('A', root => new FrameSlideshow(root, {
+            images: [svg('#0f2027', '#2c5364', '#7dd3fc'), svg('#134e5e', '#71b280', '#fde68a'), svg('#232526', '#414345', '#fca5a5')],
+            texts: ['A · one', 'A · two', 'A · three'],
+            duration: 2500, fade: 500, color: '#000000', loop: false,
+        }));
+
+        // Clip B: different timing and transition color
+        const B = mountClip('B', root => new FrameSlideshow(root, {
+            images: [svg('#42275a', '#734b6d', '#f9a8d4'), svg('#1e3c72', '#2a5298', '#a5b4fc'), svg('#3a1c71', '#d76d77', '#ffaf7b')],
+            texts: ['B · four', 'B · five', 'B · six'],
+            duration: 3000, fade: 600, color: '#1a1033', loop: false,
+        }));
+
+        // Clip C: explicit frames with per-frame overrides
+        const C = mountClip('C', root => new FrameSlideshow(root, {
+            frames: [
+                {image: svg('#355c7d', '#6c5b7b', '#c06c84'), text: 'C · seven', duration: 2000, color: '#ffffff'},
+                {image: svg('#11998e', '#38ef7d', '#ffffff'), text: 'C · eight', duration: 3500, fade: 900, color: '#ffffff'},
+            ],
+            loop: false,
+        }));
+
+        // Stitch them: new slideshow with its own display; A, B and C are untouched.
+        //   const ab = A.stitch(B, {root});               // two at a time
+        //   const all = FrameSlideshow.stitchAll([A, B, C], {root, loop: false});
+        let stitched = null;
+        function playStitched() {
+            stitched?.destroy();
+            stitched = FrameSlideshow.stitchAll([A, B, C], {root: $('bigStage'), loop: $('loopChk').checked});
+            $('stitchInfo').textContent = 'playing… (' + (stitched.totalMs / 1000).toFixed(1) + 's total)';
+            stitched.start().then(r => {if (r === 'ended') $('stitchInfo').textContent = '✓ finished';});
+        }
+        $('stitchBtn').onclick = playStitched;
+        $('loopChk').onchange = playStitched;
+        playStitched();
+    </script>
+</body>
+
+</html>
