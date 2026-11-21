@@ -5,6 +5,7 @@
   var ease = (x) => x * x * (3 - 2 * x);
   var toSpec = (a) => typeof a === "string" || a instanceof Blob ? { src: a } : { ...a };
   var toSpecs = (a) => a == null ? [] : (Array.isArray(a) ? a : [a]).map(toSpec);
+  var UNLOCK_EVENTS = ["pointerdown", "pointerup", "keydown", "touchend"];
   var SAFE_TAGS = /* @__PURE__ */ new Set(["BR", "WBR", "B", "I", "EM", "STRONG", "U", "S", "SMALL", "SUB", "SUP", "MARK", "SPAN"]);
   var DROP_TAGS = /* @__PURE__ */ new Set(["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "TEMPLATE"]);
   function sanitizeHtml(html) {
@@ -54,6 +55,7 @@
       this.blobs = /* @__PURE__ */ new Map();
       this.warmed = /* @__PURE__ */ new Set();
       this.warm = [];
+      this.unlockArmed = false;
       this.onVis = () => {
         this.last = performance.now();
         if (document.hidden) this.pauseAudio();
@@ -99,6 +101,17 @@
           } else this.applyVolume(e);
         }
         this.raf = requestAnimationFrame(this.tick);
+      };
+      this.unlock = () => {
+        this.disarmUnlock();
+        if (!this.running) return;
+        for (const e of this.audio) {
+          if (e.el && e.blocked) {
+            e.blocked = false;
+            this.seekToNow(e);
+            this.play(e);
+          }
+        }
       };
       const {
         frames,
@@ -248,6 +261,7 @@
     destroy() {
       this.stop();
       this.killAll();
+      this.disarmUnlock();
       document.removeEventListener("visibilitychange", this.onVis);
       for (const url of this.blobs.values()) URL.revokeObjectURL(url);
       this.blobs.clear();
@@ -348,7 +362,8 @@
           startMs: this.passMs,
           lenMs,
           el: null,
-          started: false
+          started: false,
+          blocked: false
         });
       }
     }
@@ -389,12 +404,41 @@
       e.el.muted = v === 0;
     }
     play(e) {
-      if (!e.el) return;
-      try {
-        void Promise.resolve(e.el.play()).catch((err) => this.onAudioError?.(err, e.spec));
-      } catch (err) {
+      const el = e.el;
+      if (!el) return;
+      const fail = (err) => {
+        if (err?.name === "NotAllowedError") {
+          e.blocked = true;
+          this.armUnlock();
+        }
         this.onAudioError?.(err, e.spec);
+      };
+      try {
+        void Promise.resolve(el.play()).catch(fail);
+      } catch (err) {
+        fail(err);
       }
+    }
+    /** Move a track to where it would be if it had started on time. */
+    seekToNow(e) {
+      const el = e.el;
+      if (!el) return;
+      const played = Math.max(0, this.passMs + this.t - e.startMs - e.offsetMs);
+      let target = ((e.spec.startAt ?? 0) + played) / 1e3;
+      if (e.spec.loop && Number.isFinite(el.duration) && el.duration > 0) target %= el.duration;
+      try {
+        el.currentTime = target;
+      } catch {
+      }
+    }
+    armUnlock() {
+      if (this.unlockArmed) return;
+      this.unlockArmed = true;
+      for (const t of UNLOCK_EVENTS) document.addEventListener(t, this.unlock, true);
+    }
+    disarmUnlock() {
+      this.unlockArmed = false;
+      for (const t of UNLOCK_EVENTS) document.removeEventListener(t, this.unlock, true);
     }
     kill(e) {
       e.el?.pause();
@@ -408,7 +452,14 @@
       for (const e of this.audio) e.el?.pause();
     }
     resumeAudio() {
-      for (const e of this.audio) if (e.el && !e.el.ended) this.play(e);
+      for (const e of this.audio) {
+        if (!e.el || e.el.ended) continue;
+        if (e.blocked) {
+          e.blocked = false;
+          this.seekToNow(e);
+        }
+        this.play(e);
+      }
     }
   };
 
@@ -444,7 +495,7 @@
     }
     return new Blob([buf], { type: "audio/wav" });
   }
-  var volume = 0;
+  var volume = 1;
   var onAudioError = (err, spec) => console.error("audio failed", spec.src, err);
   function mountClip(title, make) {
     const fig = document.createElement("figure");
@@ -461,7 +512,6 @@
       });
     };
     fig.querySelector("button").onclick = play;
-    play();
     return show;
   }
   var A = mountClip("A", (root) => new FrameSlideshow(root, {
@@ -529,4 +579,5 @@
     for (const s of [A, B, C, stitched]) s?.setOptions({ volume });
   };
   playStitched();
+  window.dbg = { A, B, C };
 })();

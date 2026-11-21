@@ -27,7 +27,7 @@ function tone(freq: number, ms: number): Blob {
     return new Blob([buf], { type: 'audio/wav' });
 }
 
-let volume = 0;   // master volume, driven by the "sound" checkbox
+let volume = 1;   // master volume, driven by the "sound" checkbox
 const onAudioError = (err: unknown, spec: AudioSpec): void => console.error('audio failed', spec.src, err);
 
 // One display per clip: its own stage, replay button and status.
@@ -45,7 +45,6 @@ function mountClip(title: string, make: (root: HTMLElement) => FrameSlideshow): 
         void show.restart().then(r => { if (r === 'ended') status.textContent = '✓ finished'; });
     };
     fig.querySelector('button')!.onclick = play;
-    play();
     return show;
 }
 
@@ -103,3 +102,5 @@ $<HTMLInputElement>('soundChk').onchange = e => {
     for (const s of [A, B, C, stitched]) s?.setOptions({ volume });
 };
 playStitched();
+
+(window as any).dbg = { A, B, C };

@@ -117,6 +117,7 @@ interface AudioEntry {
     lenMs: number;        // total duration of the frames the track spans
     el: HTMLAudioElement | null;
     started: boolean;
+    blocked: boolean;     // browser refused to play it (autoplay policy); retried on the next user gesture
 }
 
 const clamp01 = (x: number): number => (Number.isNaN(x) ? 0 : x < 0 ? 0 : x > 1 ? 1 : x);
@@ -127,6 +128,9 @@ const toSpec = (a: AudioInput): AudioSpec =>
 
 const toSpecs = (a: AudioList): AudioSpec[] =>
     a == null ? [] : (Array.isArray(a) ? a : [a]).map(toSpec);
+
+// Events the browser counts as a user activation (so audio may start)
+const UNLOCK_EVENTS = ['pointerdown', 'pointerup', 'keydown', 'touchend'] as const;
 
 const SAFE_TAGS = new Set(['BR', 'WBR', 'B', 'I', 'EM', 'STRONG', 'U', 'S', 'SMALL', 'SUB', 'SUP', 'MARK', 'SPAN']);
 const DROP_TAGS = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'TEMPLATE']);
@@ -180,6 +184,7 @@ export class FrameSlideshow {
     private blobs = new Map<Blob, string>();
     private warmed = new Set<string>();
     private warm: HTMLAudioElement[] = [];
+    private unlockArmed = false;
 
     constructor(root: HTMLElement | null | undefined, options: SlideshowOptions) {
         const {
@@ -332,6 +337,7 @@ export class FrameSlideshow {
     destroy(): void {
         this.stop();
         this.killAll();
+        this.disarmUnlock();
         document.removeEventListener('visibilitychange', this.onVis);
         for (const url of this.blobs.values()) URL.revokeObjectURL(url);
         this.blobs.clear();
@@ -486,6 +492,7 @@ export class FrameSlideshow {
                 lenMs,
                 el: null,
                 started: false,
+                blocked: false,
             });
         }
     }
@@ -524,13 +531,50 @@ export class FrameSlideshow {
     }
 
     private play(e: AudioEntry): void {
-        if (!e.el) return;
-        try {
-            void Promise.resolve(e.el.play()).catch(err => this.onAudioError?.(err, e.spec));
-        } catch (err) {
+        const el = e.el;
+        if (!el) return;
+        const fail = (err: unknown): void => {
+            if ((err as { name?: string } | null)?.name === 'NotAllowedError') {
+                e.blocked = true;                          // retry on the next click / tap / keypress
+                this.armUnlock();
+            }
             this.onAudioError?.(err, e.spec);
+        };
+        try {
+            void Promise.resolve(el.play()).catch(fail);
+        } catch (err) {
+            fail(err);
         }
     }
+
+    /** Move a track to where it would be if it had started on time. */
+    private seekToNow(e: AudioEntry): void {
+        const el = e.el;
+        if (!el) return;
+        const played = Math.max(0, this.passMs + this.t - e.startMs - e.offsetMs);
+        let target = ((e.spec.startAt ?? 0) + played) / 1000;
+        if (e.spec.loop && Number.isFinite(el.duration) && el.duration > 0) target %= el.duration;
+        try { el.currentTime = target; } catch { /* metadata not ready yet */ }
+    }
+
+    private armUnlock(): void {
+        if (this.unlockArmed) return;
+        this.unlockArmed = true;
+        for (const t of UNLOCK_EVENTS) document.addEventListener(t, this.unlock, true);
+    }
+
+    private disarmUnlock(): void {
+        this.unlockArmed = false;
+        for (const t of UNLOCK_EVENTS) document.removeEventListener(t, this.unlock, true);
+    }
+
+    private readonly unlock = (): void => {
+        this.disarmUnlock();                               // if play() fails again, it re-arms
+        if (!this.running) return;                         // resumeAudio() retries blocked tracks on start()
+        for (const e of this.audio) {
+            if (e.el && e.blocked) { e.blocked = false; this.seekToNow(e); this.play(e); }
+        }
+    };
 
     private kill(e: AudioEntry): void {
         e.el?.pause();
@@ -547,6 +591,10 @@ export class FrameSlideshow {
     }
 
     private resumeAudio(): void {
-        for (const e of this.audio) if (e.el && !e.el.ended) this.play(e);
+        for (const e of this.audio) {
+            if (!e.el || e.el.ended) continue;
+            if (e.blocked) { e.blocked = false; this.seekToNow(e); }
+            this.play(e);
+        }
     }
 }
