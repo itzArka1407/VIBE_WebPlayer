@@ -208,17 +208,23 @@
       Object.assign(this.opts, o);
       if (this.t >= this.resolve(this.index).duration) this.t = 0;
     }
-    /** New slideshow = frames of all parts, in order. The parts are untouched and keep their own displays. */
+    /**
+     * New slideshow = frames of all parts, in order. The parts are untouched and keep their own displays.
+     * Each part's own tracks stay inside that part. Pass `audio` to add one track over the WHOLE stitched
+     * show (it plays under the parts' tracks); add `loop: true` to it to repeat a clip shorter than the show.
+     */
     static stitchAll(parts, opts = {}) {
       if (!parts.length) throw new Error("nothing to stitch");
       const first = parts[0];
-      const { root, ...rest } = opts;
+      const { root, dropPartAudio, ...rest } = opts;
+      const frames = parts.flatMap((p) => p.baked());
+      if (dropPartAudio) for (const f of frames) f.audio = [];
       return new _FrameSlideshow(root, {
         loop: first.opts.loop,
         textMode: first.opts.textMode,
         volume: first.opts.volume,
         ...rest,
-        frames: parts.flatMap((p) => p.baked())
+        frames
       });
     }
     stitch(other, opts) {
@@ -607,7 +613,19 @@
   var stitched = null;
   function playStitched() {
     stitched?.destroy();
-    stitched = FrameSlideshow.stitchAll([A, B, C], { root: $("bigStage"), loop: $("loopChk").checked, volume, onAudioError });
+    stitched = FrameSlideshow.stitchAll([A, B, C], {
+      root: $("bigStage"),
+      loop: $("loopChk").checked,
+      volume,
+      onAudioError,
+      audio: {
+        src: "music/melancholy.mp3",
+        volume: 0.4,
+        loop: true,
+        fadeIn: 1e3,
+        fadeOut: 2e3
+      }
+    });
     $("stitchInfo").textContent = "playing\u2026 (" + (stitched.totalMs / 1e3).toFixed(1) + "s total)";
     void stitched.start().then((r) => {
       if (r === "ended") $("stitchInfo").textContent = "\u2713 finished";

@@ -91,7 +91,19 @@ const C = mountClip('C', root => new FrameSlideshow(root, {
 let stitched: FrameSlideshow | null = null;
 function playStitched(): void {
     stitched?.destroy();
-    stitched = FrameSlideshow.stitchAll([A, B, C], { root: $('bigStage'), loop: $<HTMLInputElement>('loopChk').checked, volume, onAudioError });
+    stitched = FrameSlideshow.stitchAll([A, B, C], {
+        root: $('bigStage'),
+        loop: $<HTMLInputElement>('loopChk').checked,
+        volume,
+        onAudioError,
+        audio: {
+            src: 'music/melancholy.mp3',
+            volume: 0.4,
+            loop: true,
+            fadeIn: 1000,
+            fadeOut: 2000,
+        },
+    });
     $('stitchInfo').textContent = 'playing… (' + (stitched.totalMs / 1000).toFixed(1) + 's total)';
     void stitched.start().then(r => { if (r === 'ended') $('stitchInfo').textContent = '✓ finished'; });
 }

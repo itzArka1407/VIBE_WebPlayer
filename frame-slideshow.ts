@@ -84,8 +84,10 @@ export interface SlideshowOptions {
     createAudio?: (url: string) => HTMLAudioElement;
 }
 
-export type StitchOptions = Omit<SlideshowOptions, 'frames' | 'images' | 'texts' | 'audios' | 'audio'> & {
+export type StitchOptions = Omit<SlideshowOptions, 'frames' | 'images' | 'texts' | 'audios'> & {
     root?: HTMLElement | null;
+    /** Drop every part's own audio so only `audio` (the track over the whole stitched show) plays. */
+    dropPartAudio?: boolean;
 };
 
 interface Opts {
@@ -283,17 +285,23 @@ export class FrameSlideshow {
         if (this.t >= this.resolve(this.index).duration) this.t = 0;
     }
 
-    /** New slideshow = frames of all parts, in order. The parts are untouched and keep their own displays. */
+    /**
+     * New slideshow = frames of all parts, in order. The parts are untouched and keep their own displays.
+     * Each part's own tracks stay inside that part. Pass `audio` to add one track over the WHOLE stitched
+     * show (it plays under the parts' tracks); add `loop: true` to it to repeat a clip shorter than the show.
+     */
     static stitchAll(parts: FrameSlideshow[], opts: StitchOptions = {}): FrameSlideshow {
         if (!parts.length) throw new Error('nothing to stitch');
         const first = parts[0];
-        const { root, ...rest } = opts;
+        const { root, dropPartAudio, ...rest } = opts;
+        const frames = parts.flatMap(p => p.baked());
+        if (dropPartAudio) for (const f of frames) f.audio = [];
         return new FrameSlideshow(root, {
             loop: first.opts.loop,
             textMode: first.opts.textMode,
             volume: first.opts.volume,
             ...rest,
-            frames: parts.flatMap(p => p.baked()),
+            frames,
         });
     }
 
