@@ -1,0 +1,47 @@
+/* FrameSlideshow styles. The root element needs a size (width + height, or aspect-ratio). */
+.fs {
+    position: relative;
+    overflow: hidden;
+    background: #000;
+    container-type: size;           /* lets the text scale with the slideshow, not the viewport */
+}
+
+.fs-bg,
+.fs-overlay,
+.fs-text-wrap {
+    position: absolute;
+    inset: 0;
+}
+
+.fs-bg {
+    background-size: cover;
+    background-position: center;
+}
+
+.fs-text-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6vmin;                 /* fallback for browsers without container units */
+    padding: 6cqmin;
+    text-align: center;
+}
+
+/* Shrink-to-fit box: as wide as its longest line (up to max-width).
+   JS sets text-align / text-align-last on it per frame (see textAlign option). */
+.fs-text {
+    color: #fff;
+    font-weight: 700;
+    font-size: clamp(1.5rem, 6vmin, 4rem);
+    font-size: clamp(.8rem, 7cqmin, 4rem);
+    line-height: 1.2;
+    text-shadow: 0 2px 18px rgba(0, 0, 0, .55);
+    max-width: 22ch;
+    /* text-justify: inter-character;   uncomment to spread letters on lines with a single word */
+}
+
+.fs-overlay {
+    background: var(--fs-color, #000);
+    opacity: 1;
+    pointer-events: none;
+}

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>FrameSlideshow</title>
+    <link rel="stylesheet" href="frame-slideshow.css">
+    <style>
+        html, body { margin: 0; background: #0b0b0c; color: #eee; font-family: system-ui, sans-serif; }
+        main { max-width: 1000px; margin: 0 auto; padding: 20px 16px calc(24px + env(safe-area-inset-bottom, 0px)); }
+        h2 { font-size: 14px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: #999; margin: 24px 0 10px; }
+        #clips { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+        .cell { margin: 0; }
+        .stage { aspect-ratio: 16 / 9; border-radius: 10px; }
+        figcaption { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; padding-top: 8px; }
+        .status { color: #8a8; margin-left: 6px; }
+        button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid #444; background: #1c1c1e; color: #eee; cursor: pointer; }
+        button:hover { background: #2a2a2d; }
+        .bar { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 10px; font-size: 13px; }
+    </style>
+</head>
+
+<body>
+    <main>
+        <div class="bar"><label><input type="checkbox" id="soundChk"> sound (tick, then press a Replay button)</label></div>
+        <h2>Independent clips (each plays once, on its own)</h2>
+        <div id="clips"></div>
+
+        <h2>Stitched result</h2>
+        <div class="bar">
+            <button id="stitchBtn">Stitch A + B + C &amp; play</button>
+            <label><input type="checkbox" id="loopChk"> loop stitched result</label>
+            <span id="stitchInfo"></span>
+        </div>
+        <div class="stage fs" id="bigStage"></div>
+    </main>
+    <script src="main.js"></script>
+</body>
+
+</html>

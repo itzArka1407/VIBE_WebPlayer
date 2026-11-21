@@ -1,0 +1,12 @@
+{
+  "name": "frame-slideshow-demo",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "esbuild main.ts --bundle --outfile=main.js --format=iife --target=es2020"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}
