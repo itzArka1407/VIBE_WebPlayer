@@ -13,7 +13,7 @@ A small, dependency-free TypeScript class that plays a list of **frames** (backg
 - Loop forever, or `loop: false` to play once and finish (a promise resolves, `onEnd` fires).
 - **Stitching**: `a.stitch(b)` / `FrameSlideshow.stitchAll([a, b, c])` returns a new slideshow. The originals are untouched and keep playing on their own displays.
 - Text rendered as HTML (so `<br>` works), with an optional sanitizer, and a `justify-all` mode that stretches every line to the same width.
-- Audio: a global track, per-frame tracks, or a parallel `audios` array, from a URL or a `Blob`/`File`. Offsets, seeking, fades, volume, looping, spans across frames.
+- Audio: a global track, per-frame tracks, or a parallel `audios` array, from a URL or a `Blob`/`File`. Trimming to a start/end you choose, offsets, fades, volume, looping, spans across frames.
 - Playback control: `start`, `stop`, `restart`, `toggle`, `next`, `prev`, `goTo`.
 - Frame-based clock (`requestAnimationFrame`): no timer drift, pauses with a hidden tab, resumes without skipping frames.
 
@@ -219,11 +219,13 @@ Audio is a URL string, a `Blob`/`File`, or an `AudioSpec`:
 interface AudioSpec {
   src: string | Blob;
   volume?: number;      // 0..1, default 1 (multiplied by the master volume)
-  offset?: number;      // ms after the owning frame starts before it begins
-  startAt?: number;     // ms to seek into the file before playing
+  offset?: number;      // DELAY in the show: ms after the owning frame starts before it begins
+  startOffset?: number; // TRIM from the start: ms cut off the beginning of the file (default 0)
+  endOffset?: number;   // TRIM from the end: ms cut off the end of the file (default 0)
+  length?: number;      // play at most this many ms of the clip (ends at whichever comes first: length or endOffset)
   fadeIn?: number;      // ms of linear ramp up from the track's start
   fadeOut?: number;     // ms of linear ramp down before it is cut (needs stopAtEnd)
-  loop?: boolean;       // repeat while alive (you decide; nothing is automatic)
+  loop?: boolean;       // repeat while alive (you decide; nothing is automatic). A trimmed track repeats its clip
   span?: number;        // frames covered, counted from the owning frame. Default 1. Infinity = whole run
   stopAtEnd?: boolean;  // default true: cut when the span ends. false: play to its natural end
 }
@@ -253,11 +255,52 @@ A frame can have several tracks: `audio: ['a.mp3', { src: 'b.mp3', offset: 500 }
 
 - A per-frame track starts when its frame starts (plus `offset`) and is cut when its `span` ends. Set `stopAtEnd: false` to let it finish on its own.
 - The global `audio` option is a track on frame 0 with `span: Infinity`. It starts again each time a looping show wraps.
-- `loop: true` repeats a clip that is shorter than its span. It restarts at the beginning of the file, not at `startAt`, and some MP3s leave a small gap at the loop point (use WAV/OGG if that's audible).
+- `loop: true` repeats a clip that is shorter than its span. An untrimmed track restarts at the beginning of the file. A trimmed one (see below) repeats just its clip. Some MP3s leave a small gap at the loop point (use WAV/OGG if that's audible).
 - `fadeOut` ramps the volume down over the last `fadeOut` ms before the track is cut.
 - `stop()`, `toggle()` and a hidden browser tab pause the audio together with the visuals.
 - `goTo`, `next` and `prev` re-queue any tracks that cover the new position and seek them into place.
 - `Blob`/`File` sources are turned into object URLs internally and released on `destroy()`.
+
+### Trimming a track (cutting its start and end)
+
+`startOffset` cuts time off the **beginning** of the file, and `endOffset` cuts time off the **end**. Both are in milliseconds, they work for global, per-frame and stitched tracks alike, and you can use either one or both.
+
+```ts
+// cut the first 12.5 s and the last 3 s of the file
+audio: { src: 'music/bgm.mp3', startOffset: 12500, endOffset: 3000 }
+
+// only cut the intro (play from 30 s to the end of the file)
+audio: { src: 'music/bgm.mp3', startOffset: 30000 }
+
+// only cut the outro (play from the start, stop 4 s before the end)
+audio: { src: 'music/bgm.mp3', endOffset: 4000 }
+
+// cut the intro, then play only 8 s of what is left
+audio: { src: 'music/bgm.mp3', startOffset: 12500, length: 8000 }
+
+// loop whatever is left after trimming, for the whole show
+audio: { src: 'music/bgm.mp3', startOffset: 8000, endOffset: 20000, loop: true, volume: 0.5 }
+```
+
+Three similarly named settings, so to keep them apart:
+
+| Setting | Acts on | Meaning |
+|---|---|---|
+| `offset` | the **show** | Delay: the track starts this many ms after its frame starts. |
+| `startOffset` | the **file** | Trim: this many ms are cut off the beginning of the file. |
+| `endOffset` | the **file** | Trim: this many ms are cut off the end of the file. |
+
+Details:
+
+- Without `loop`, a trimmed track plays the remaining clip once and then goes silent. With `loop: true` it jumps back to the start of the clip each time it reaches the end.
+- `length` caps how much of the clip plays, counted from the start of the clip. If you give both `length` and `endOffset`, the earlier end wins.
+- `endOffset` needs the file's total duration, so it only takes effect once the browser has loaded the file's metadata (a moment after the track starts). It can't be applied to streams of unknown length. `startOffset` and `length` don't depend on that.
+- If `startOffset` and `endOffset` together cover the whole file, nothing plays: the track is dropped and `onAudioError` receives an error.
+- `fadeIn` and `fadeOut` are measured on the show timeline. `fadeOut` ramps down before the track is cut at the end of its `span`. A track that simply reaches the end of its clip does not fade.
+- The track also stops at the end of its `span` (or the end of the show), whichever comes first.
+- `goTo`, `next` and `prev` and blocked-autoplay retries seek **inside** the clip. A non-looping clip that would already be over at the new position isn't replayed.
+- `startOffset` and `endOffset` can't be negative and `length` must be above 0, otherwise the constructor throws.
+- The clip end is checked once per animation frame (about 16 ms), so a track can run up to a frame past its end, and each loop restart is a small seek, so loop points are not sample-accurate. For exact loop points, trim the file itself in an audio editor.
 
 ### Browser autoplay rules
 
@@ -373,7 +416,7 @@ The demo's audio uses generated tones (`tone()` makes a WAV `Blob`) so it needs 
 
 ## Verification and known limits
 
-- The library type-checks under `tsc --strict`. A jsdom test suite (58 checks) covers play-once and looping, stitching, text modes, seeking, pause and resume, and audio timing and blocking. The tests use a mocked clock and mocked audio.
+- The library type-checks under `tsc --strict`. A jsdom test suite (79 checks) covers play-once and looping, stitching, text modes, seeking, pause and resume, audio timing and blocking, and clip trimming. The tests use a mocked clock and mocked audio.
 - **Not yet verified in real browsers:** actual audio output, autoplay-policy behavior across browsers, fullscreen, and visual rendering. Test those in the browsers you target.
 - Audio relies on `HTMLAudioElement`. Mobile Safari may be stricter about playback and `preload`.
 - There is no video export yet. A `render(t)` method that draws any time position without a running clock would be the starting point for exporting frames.

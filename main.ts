@@ -86,24 +86,21 @@ const C = mountClip('C', root => new FrameSlideshow(root, {
     volume, onAudioError,
 }));
 
+const introFrame = mountClip('Intro', root => new FrameSlideshow(root, {
+
+}));
+
 // Stitch them: new slideshow with its own display; A, B and C are untouched.
 //   const ab  = A.stitch(B, { root });
 //   const all = FrameSlideshow.stitchAll([A, B, C], { root, loop: false });
 let stitched: FrameSlideshow | null = null;
 function playStitched(): void {
     stitched?.destroy();
-    stitched = FrameSlideshow.stitchAll([A, B, C], {
+    stitched = FrameSlideshow.stitchAll([introFrame], {
         root: $('bigStage'),
         loop: $<HTMLInputElement>('loopChk').checked,
         volume,
         onAudioError,
-        audio: {
-            src: 'music/melancholy.mp3',
-            volume: 0.4,
-            loop: true,
-            fadeIn: 1000,
-            fadeOut: 2000,
-        },
     });
     $('stitchInfo').textContent = 'playing… (' + (stitched.totalMs / 1000).toFixed(1) + 's total)';
     void stitched.start().then(r => { if (r === 'ended') $('stitchInfo').textContent = '✓ finished'; });

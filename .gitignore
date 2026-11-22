@@ -1,3 +1,6 @@
 music/
 node_modules/
 pnpm-lock.yaml
+processed_ones/
+placeholders.txt
+pictures/

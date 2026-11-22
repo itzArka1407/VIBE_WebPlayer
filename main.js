@@ -3,7 +3,13 @@
   // frame-slideshow.ts
   var clamp01 = (x) => Number.isNaN(x) ? 0 : x < 0 ? 0 : x > 1 ? 1 : x;
   var ease = (x) => x * x * (3 - 2 * x);
-  var toSpec = (a) => typeof a === "string" || a instanceof Blob ? { src: a } : { ...a };
+  var toSpec = (a) => {
+    const spec = typeof a === "string" || a instanceof Blob ? { src: a } : { ...a };
+    if ((spec.startOffset ?? 0) < 0) throw new Error("audio startOffset must be >= 0");
+    if ((spec.endOffset ?? 0) < 0) throw new Error("audio endOffset must be >= 0");
+    if (spec.length !== void 0 && spec.length <= 0) throw new Error("audio length must be greater than 0");
+    return spec;
+  };
   var toSpecs = (a) => a == null ? [] : (Array.isArray(a) ? a : [a]).map(toSpec);
   var UNLOCK_EVENTS = ["pointerdown", "pointerup", "keydown", "touchend"];
   var SAFE_TAGS = /* @__PURE__ */ new Set(["BR", "WBR", "B", "I", "EM", "STRONG", "U", "S", "SMALL", "SUB", "SUP", "MARK", "SPAN"]);
@@ -98,7 +104,10 @@
         for (const e of this.audio) {
           if (!e.started) {
             if (pos - e.startMs >= e.offsetMs) this.startEntry(e);
-          } else this.applyVolume(e);
+          } else {
+            this.applyVolume(e);
+            this.checkClip(e);
+          }
         }
         this.raf = requestAnimationFrame(this.tick);
       };
@@ -108,8 +117,8 @@
         for (const e of this.audio) {
           if (e.el && e.blocked) {
             e.blocked = false;
-            this.seekToNow(e);
-            this.play(e);
+            if (this.seekToNow(e)) this.play(e);
+            else this.dropEntry(e);
           }
         }
       };
@@ -405,8 +414,13 @@
         if (j < upto && !(cut && j + span > upto)) continue;
         let lenMs = 0;
         for (let k = j; k < Math.min(j + span, n); k++) lenMs += this.resolve(k).duration;
+        const clipStart = (spec.startOffset ?? 0) / 1e3;
+        const clipLen = spec.length === void 0 ? void 0 : spec.length / 1e3;
         this.audio.push({
           spec,
+          clipStart,
+          clipLen,
+          manualLoop: !!spec.loop && (clipStart > 0 || clipLen !== void 0 || (spec.endOffset ?? 0) > 0),
           endFrame: j + span,
           cut,
           offsetMs: Math.max(0, spec.offset ?? 0),
@@ -428,11 +442,34 @@
         return;
       }
       el2.preload = "auto";
-      el2.loop = !!e.spec.loop;
+      el2.loop = !!e.spec.loop && !e.manualLoop;
       e.el = el2;
       const late = this.passMs + this.t - e.startMs - e.offsetMs;
-      if (e.spec.startAt || late > 300) this.seekToNow(e);
+      if (late > 300) {
+        if (!this.seekToNow(e)) {
+          this.dropEntry(e);
+          return;
+        }
+      } else if (e.clipStart > 0) {
+        try {
+          el2.currentTime = e.clipStart;
+        } catch {
+        }
+      }
+      if (late > 300 && (e.spec.endOffset ?? 0) > 0 && !Number.isFinite(el2.duration)) {
+        el2.addEventListener("loadedmetadata", () => {
+          if (e.el === el2 && !this.seekToNow(e)) this.dropEntry(e);
+        }, { once: true });
+      }
       el2.addEventListener("ended", () => {
+        if (e.manualLoop && e.el === el2) {
+          try {
+            el2.currentTime = e.clipStart;
+          } catch {
+          }
+          this.play(e);
+          return;
+        }
         this.audio = this.audio.filter((x) => x !== e);
       });
       this.applyVolume(e);
@@ -466,17 +503,41 @@
         fail(err);
       }
     }
-    /** Move a track to where it would be if it had started on time. */
+    /** Where the clip ends, in seconds into the file (undefined = no end to watch, or the file's length isn't known yet). */
+    clipEnd(e) {
+      let end = e.clipLen === void 0 ? void 0 : e.clipStart + e.clipLen;
+      const trim = (e.spec.endOffset ?? 0) / 1e3;
+      const d = e.el?.duration;
+      if (trim > 0 && d !== void 0 && Number.isFinite(d)) {
+        const fromTail = d - trim;
+        end = end === void 0 ? fromTail : Math.min(end, fromTail);
+      }
+      return end;
+    }
+    /**
+     * Move a track to where it would be if it had started on time, inside its clip.
+     * Returns false when the clip is empty, or a non-looping clip is already over (nothing left to play).
+     */
     seekToNow(e) {
       const el2 = e.el;
-      if (!el2) return;
-      const played = Math.max(0, this.passMs + this.t - e.startMs - e.offsetMs);
-      let target = ((e.spec.startAt ?? 0) + played) / 1e3;
-      if (e.spec.loop && Number.isFinite(el2.duration) && el2.duration > 0) target %= el2.duration;
+      if (!el2) return false;
+      const played = Math.max(0, this.passMs + this.t - e.startMs - e.offsetMs) / 1e3;
+      let target = e.clipStart + played;
+      const end = this.clipEnd(e);
+      if (end !== void 0) {
+        const len = end - e.clipStart;
+        if (len <= 0) return false;
+        if (e.spec.loop) target = e.clipStart + played % len;
+        else if (target >= end) return false;
+      } else if (e.spec.loop && Number.isFinite(el2.duration)) {
+        const len = el2.duration - e.clipStart;
+        if (len > 0) target = e.clipStart + played % len;
+      }
       try {
         el2.currentTime = target;
       } catch {
       }
+      return true;
     }
     armUnlock() {
       if (this.unlockArmed) return;
@@ -486,6 +547,31 @@
     disarmUnlock() {
       this.unlockArmed = false;
       for (const t of UNLOCK_EVENTS) document.removeEventListener(t, this.unlock, true);
+    }
+    /** Called every frame: stop (or loop) a trimmed track when it reaches its clip end. */
+    checkClip(e) {
+      const el2 = e.el;
+      if (!el2) return;
+      const end = this.clipEnd(e);
+      if (end === void 0) return;
+      if (end <= e.clipStart) {
+        this.onAudioError?.(new Error("audio clip is empty: startOffset + endOffset cover the whole file"), e.spec);
+        this.dropEntry(e);
+        return;
+      }
+      if (el2.paused || el2.currentTime < end) return;
+      if (e.spec.loop) {
+        try {
+          el2.currentTime = e.clipStart;
+        } catch {
+        }
+      } else {
+        this.dropEntry(e);
+      }
+    }
+    dropEntry(e) {
+      this.kill(e);
+      this.audio = this.audio.filter((x) => x !== e);
     }
     kill(e) {
       e.el?.pause();
@@ -503,7 +589,10 @@
         if (!e.el || e.el.ended) continue;
         if (e.blocked) {
           e.blocked = false;
-          this.seekToNow(e);
+          if (!this.seekToNow(e)) {
+            this.dropEntry(e);
+            continue;
+          }
         }
         this.play(e);
       }
@@ -579,21 +668,15 @@
     volume,
     onAudioError
   }));
+  var introFrame = mountClip("Intro", (root) => new FrameSlideshow(root, {}));
   var stitched = null;
   function playStitched() {
     stitched?.destroy();
-    stitched = FrameSlideshow.stitchAll([A, B, C], {
+    stitched = FrameSlideshow.stitchAll([introFrame], {
       root: $("bigStage"),
       loop: $("loopChk").checked,
       volume,
-      onAudioError,
-      audio: {
-        src: "music/melancholy.mp3",
-        volume: 0.4,
-        loop: true,
-        fadeIn: 1e3,
-        fadeOut: 2e3
-      }
+      onAudioError
     });
     $("stitchInfo").textContent = "playing\u2026 (" + (stitched.totalMs / 1e3).toFixed(1) + "s total)";
     void stitched.start().then((r) => {

@@ -1,6 +1,6 @@
 /**
  * FrameSlideshow: frames (image + text + optional audio) shown with a fade-through-color transition.
- * Needs frame-slideshow.css. Full API summary at the bottom of this comment block.
+ * Needs frame-slideshow.css. Full API reference: see README.md.
  *
  *   const s = new FrameSlideshow(el, { images, texts, duration: 4000, fade: 700, color: '#000', loop: false });
  *   await s.start();                                  // 'ended' | 'stopped'
@@ -8,7 +8,7 @@
  *
  * Text:   textMode 'html' (innerHTML, default) | 'sanitized' (innerHTML, allowlist) | 'text' (textContent)
  *         textAlign 'center' (default) | 'left' | 'right' | 'justify' | 'justify-all'
- * Audio:  global `audio` option, per-frame `audio`, or a parallel `audios` array. Each is a URL string,
+ * Audio:  trim a track with startOffset / endOffset (or length); global `audio` option, per-frame `audio`, or a parallel `audios` array. Each is a URL string,
  *         a Blob/File, or an AudioSpec. Call start() from a user gesture so the browser allows playback.
  */
 
@@ -21,15 +21,22 @@ export interface AudioSpec {
     src: string | Blob;
     /** 0..1, default 1. Multiplied by the slideshow's master `volume`. */
     volume?: number;
-    /** ms after the owning frame starts before the track begins. */
+    /** Trim from the start: ms cut off the beginning of the file. Default 0. */
+    startOffset?: number;
+    /**
+     * Trim from the end: ms cut off the end of the file. Needs the file's duration, so it takes effect
+     * once the browser has loaded the metadata (not possible for streams of unknown length). Default 0.
+     */
+    endOffset?: number;
+    /** Play at most this many ms, counted from the start of the clip (after startOffset). Ends at whichever comes first: this or endOffset. */
+    length?: number;
+    /** ms after the owning frame starts before the track begins (a delay in the SHOW, not a trim of the file). */
     offset?: number;
-    /** ms to seek into the track before playing. */
-    startAt?: number;
     /** ms of linear volume ramp up from the track's start. */
     fadeIn?: number;
     /** ms of linear ramp down before the track is cut (needs stopAtEnd, the default). */
     fadeOut?: number;
-    /** Loop the track while it is alive. */
+    /** Repeat while alive. A trimmed track repeats its clip (between startOffset and endOffset), not the whole file. */
     loop?: boolean;
     /** Number of frames the track covers, counted from its owning frame. Default 1. Infinity = whole pass. */
     span?: number;
@@ -120,13 +127,21 @@ interface AudioEntry {
     el: HTMLAudioElement | null;
     started: boolean;
     blocked: boolean;     // browser refused to play it (autoplay policy); retried on the next user gesture
+    clipStart: number;    // seconds cut off the start of the file (startOffset)
+    clipLen: number | undefined;   // seconds the clip may last at most (length); undefined = no limit
+    manualLoop: boolean;  // looping a clip that does not span the whole file: we seek back ourselves
 }
 
 const clamp01 = (x: number): number => (Number.isNaN(x) ? 0 : x < 0 ? 0 : x > 1 ? 1 : x);
 const ease = (x: number): number => x * x * (3 - 2 * x);
 
-const toSpec = (a: AudioInput): AudioSpec =>
-    typeof a === 'string' || a instanceof Blob ? { src: a } : { ...a };
+const toSpec = (a: AudioInput): AudioSpec => {
+    const spec: AudioSpec = typeof a === 'string' || a instanceof Blob ? { src: a } : { ...a };
+    if ((spec.startOffset ?? 0) < 0) throw new Error('audio startOffset must be >= 0');
+    if ((spec.endOffset ?? 0) < 0) throw new Error('audio endOffset must be >= 0');
+    if (spec.length !== undefined && spec.length <= 0) throw new Error('audio length must be greater than 0');
+    return spec;
+};
 
 const toSpecs = (a: AudioList): AudioSpec[] =>
     a == null ? [] : (Array.isArray(a) ? a : [a]).map(toSpec);
@@ -491,7 +506,7 @@ export class FrameSlideshow {
         const pos = this.passMs + this.t;
         for (const e of this.audio) {
             if (!e.started) { if (pos - e.startMs >= e.offsetMs) this.startEntry(e); }
-            else this.applyVolume(e);
+            else { this.applyVolume(e); this.checkClip(e); }
         }
 
         this.raf = requestAnimationFrame(this.tick);
@@ -541,8 +556,13 @@ export class FrameSlideshow {
             if (j < upto && !(cut && j + span > upto)) continue;
             let lenMs = 0;
             for (let k = j; k < Math.min(j + span, n); k++) lenMs += this.resolve(k).duration;
+            const clipStart = (spec.startOffset ?? 0) / 1000;
+            const clipLen = spec.length === undefined ? undefined : spec.length / 1000;
             this.audio.push({
                 spec,
+                clipStart,
+                clipLen,
+                manualLoop: !!spec.loop && (clipStart > 0 || clipLen !== undefined || (spec.endOffset ?? 0) > 0),
                 endFrame: j + span,
                 cut,
                 offsetMs: Math.max(0, spec.offset ?? 0),
@@ -565,11 +585,27 @@ export class FrameSlideshow {
             return;
         }
         el.preload = 'auto';
-        el.loop = !!e.spec.loop;
+        el.loop = !!e.spec.loop && !e.manualLoop;          // a clip is looped by us (see checkClip)
         e.el = el;
         const late = this.passMs + this.t - e.startMs - e.offsetMs;   // > 0 when started after a seek
-        if (e.spec.startAt || late > 300) this.seekToNow(e);
-        el.addEventListener('ended', () => { this.audio = this.audio.filter(x => x !== e); });
+        if (late > 300) {                                  // genuinely late (after a jump): catch up inside the clip
+            if (!this.seekToNow(e)) { this.dropEntry(e); return; }
+        } else if (e.clipStart > 0) {                      // on time: begin exactly at the chosen clip start
+            try { el.currentTime = e.clipStart; } catch { /* metadata not ready yet */ }
+        }
+        if (late > 300 && (e.spec.endOffset ?? 0) > 0 && !Number.isFinite(el.duration)) {
+            el.addEventListener('loadedmetadata', () => {      // the file's length is known now: re-sync inside the clip
+                if (e.el === el && !this.seekToNow(e)) this.dropEntry(e);
+            }, { once: true });
+        }
+        el.addEventListener('ended', () => {
+            if (e.manualLoop && e.el === el) {             // reached the end of the file while looping a clip
+                try { el.currentTime = e.clipStart; } catch { /* ignore */ }
+                this.play(e);
+                return;
+            }
+            this.audio = this.audio.filter(x => x !== e);
+        });
         this.applyVolume(e);
         this.play(e);
     }
@@ -604,14 +640,39 @@ export class FrameSlideshow {
         }
     }
 
-    /** Move a track to where it would be if it had started on time. */
-    private seekToNow(e: AudioEntry): void {
+    /** Where the clip ends, in seconds into the file (undefined = no end to watch, or the file's length isn't known yet). */
+    private clipEnd(e: AudioEntry): number | undefined {
+        let end = e.clipLen === undefined ? undefined : e.clipStart + e.clipLen;
+        const trim = (e.spec.endOffset ?? 0) / 1000;
+        const d = e.el?.duration;
+        if (trim > 0 && d !== undefined && Number.isFinite(d)) {
+            const fromTail = d - trim;
+            end = end === undefined ? fromTail : Math.min(end, fromTail);
+        }
+        return end;
+    }
+
+    /**
+     * Move a track to where it would be if it had started on time, inside its clip.
+     * Returns false when the clip is empty, or a non-looping clip is already over (nothing left to play).
+     */
+    private seekToNow(e: AudioEntry): boolean {
         const el = e.el;
-        if (!el) return;
-        const played = Math.max(0, this.passMs + this.t - e.startMs - e.offsetMs);
-        let target = ((e.spec.startAt ?? 0) + played) / 1000;
-        if (e.spec.loop && Number.isFinite(el.duration) && el.duration > 0) target %= el.duration;
+        if (!el) return false;
+        const played = Math.max(0, this.passMs + this.t - e.startMs - e.offsetMs) / 1000;
+        let target = e.clipStart + played;
+        const end = this.clipEnd(e);
+        if (end !== undefined) {
+            const len = end - e.clipStart;
+            if (len <= 0) return false;
+            if (e.spec.loop) target = e.clipStart + (played % len);
+            else if (target >= end) return false;
+        } else if (e.spec.loop && Number.isFinite(el.duration)) {
+            const len = el.duration - e.clipStart;
+            if (len > 0) target = e.clipStart + (played % len);
+        }
         try { el.currentTime = target; } catch { /* metadata not ready yet */ }
+        return true;
     }
 
     private armUnlock(): void {
@@ -629,9 +690,36 @@ export class FrameSlideshow {
         this.disarmUnlock();                               // if play() fails again, it re-arms
         if (!this.running) return;                         // resumeAudio() retries blocked tracks on start()
         for (const e of this.audio) {
-            if (e.el && e.blocked) { e.blocked = false; this.seekToNow(e); this.play(e); }
+            if (e.el && e.blocked) {
+                e.blocked = false;
+                if (this.seekToNow(e)) this.play(e); else this.dropEntry(e);
+            }
         }
     };
+
+    /** Called every frame: stop (or loop) a trimmed track when it reaches its clip end. */
+    private checkClip(e: AudioEntry): void {
+        const el = e.el;
+        if (!el) return;
+        const end = this.clipEnd(e);
+        if (end === undefined) return;                   // no end to watch yet
+        if (end <= e.clipStart) {                        // startOffset + endOffset leave nothing to play
+            this.onAudioError?.(new Error('audio clip is empty: startOffset + endOffset cover the whole file'), e.spec);
+            this.dropEntry(e);
+            return;
+        }
+        if (el.paused || el.currentTime < end) return;
+        if (e.spec.loop) {
+            try { el.currentTime = e.clipStart; } catch { /* ignore */ }
+        } else {
+            this.dropEntry(e);
+        }
+    }
+
+    private dropEntry(e: AudioEntry): void {
+        this.kill(e);
+        this.audio = this.audio.filter(x => x !== e);
+    }
 
     private kill(e: AudioEntry): void {
         e.el?.pause();
@@ -650,7 +738,10 @@ export class FrameSlideshow {
     private resumeAudio(): void {
         for (const e of this.audio) {
             if (!e.el || e.el.ended) continue;
-            if (e.blocked) { e.blocked = false; this.seekToNow(e); }
+            if (e.blocked) {
+                e.blocked = false;
+                if (!this.seekToNow(e)) { this.dropEntry(e); continue; }
+            }
             this.play(e);
         }
     }
